@@ -21,7 +21,7 @@ VL_COMMON := --sv --timing --assert --trace --trace-structs \
              -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-UNDRIVEN \
              -Wno-WIDTHCONCAT -Wno-BLKANDNBLK -Wno-CASEINCOMPLETE \
              -Wno-PINCONNECTEMPTY -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
-             -Wno-SELRANGE -Wno-TIMESCALEMOD \
+             -Wno-SELRANGE -Wno-TIMESCALEMOD -Wno-INITIALDLY -Wno-LATCH \
              -CFLAGS "-std=c++17 -I../model"
 
 RTL_PKG   := rtl/pkg/quasar_pkg.sv

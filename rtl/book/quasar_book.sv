@@ -33,7 +33,8 @@ module quasar_book
     output bbo_t [NUM_INSTRUMENTS-1:0] bbo_vec,
     output logic [15:0]           orders_used,
     output logic [15:0]           levels_used,
-    output logic                  busy
+    output logic                  busy,
+    output logic [5:0]            dbg_state
 );
 
     // -------------------------------------------------------------------------
@@ -169,6 +170,8 @@ module quasar_book
     logic             after_cxl_insert; // unused placeholder for replace
     logic             opp_side;
     logic [INST_W-1:0] inst_q;
+    logic [PTR_W-1:0]  old_head;
+    logic [QTY_W-1:0]  newq;
 
     logic do_ord_pop, do_ord_push, do_lvl_pop, do_lvl_push;
 
@@ -176,6 +179,7 @@ module quasar_book
     assign rsp_valid = (state == ST_RSP);
     assign rsp       = rsp_q;
     assign busy      = (state != ST_IDLE) && (state != ST_RSP) && (state != ST_INIT);
+    assign dbg_state = state;
 
     function automatic bbo_t bbo_clear();
         bbo_clear = '0;
@@ -240,6 +244,8 @@ module quasar_book
         fill_qty_n     = fill_qty_r;
         deplete_n      = deplete;
         bbo_n          = bbo;
+        old_head       = NULL_PTR;
+        newq           = '0;
 
         ord_raddr = 8'h0;
         ord_waddr = 8'h0;
@@ -626,14 +632,20 @@ module quasar_book
             // -----------------------------------------------------------------
             ST_INS_WALK: begin
                 cur_lvl_n = lvl_rdata;
-                if (lvl_rdata.valid && lvl_rdata.price == q.price &&
+                if (!lvl_rdata.valid || is_null(walk_ptr) ||
+                    lvl_rdata.next_lvl == walk_ptr) begin
+                    // Corrupt / end-of-list: insert as new best if prev is null,
+                    // otherwise append after prev.
+                    lvl_found_n = 1'b0;
+                    lvl_ptr_n   = NULL_PTR;
+                    state_n     = ST_INS_ALLOC;
+                end else if (lvl_rdata.price == q.price &&
                     lvl_rdata.inst == q.inst && lvl_rdata.side == q.side) begin
                     lvl_found_n = 1'b1;
                     lvl_ptr_n   = walk_ptr;
                     state_n     = ST_INS_ALLOC;
-                end else if (lvl_rdata.valid &&
-                             ((q.side == SIDE_BID && lvl_rdata.price < q.price) ||
-                              (q.side == SIDE_ASK && lvl_rdata.price > q.price))) begin
+                end else if ((q.side == SIDE_BID && lvl_rdata.price < q.price) ||
+                             (q.side == SIDE_ASK && lvl_rdata.price > q.price)) begin
                     // insertion point is before walk_ptr (after lvl_prev)
                     lvl_found_n = 1'b0;
                     lvl_ptr_n   = walk_ptr; // this becomes next_lvl of new
@@ -701,7 +713,6 @@ module quasar_book
             ST_INS_WR_LVL: begin
                 // hash_rdata is the old bucket head
                 // complete order hash links + write level
-                logic [PTR_W-1:0] old_head;
                 old_head = hash_rdata;
 
                 // patch hash links on the new order (rewrite)
@@ -1201,7 +1212,6 @@ module quasar_book
                     rsp_n.found_price = cur_ord.price;
                     state_n = ST_RSP;
                 end else begin
-                    logic [QTY_W-1:0] newq;
                     newq = q.qty;
                     ord_we    = 1'b1;
                     ord_waddr = p8(found_ptr);

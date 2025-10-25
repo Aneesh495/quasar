@@ -215,7 +215,8 @@ module quasar_core
         .bbo_vec(bbo_vec),
         .orders_used(ord_used),
         .levels_used(lvl_used),
-        .busy(book_busy)
+        .busy(book_busy),
+        .dbg_state()
     );
 
     // -------------------------------------------------------------------------

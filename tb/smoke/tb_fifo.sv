@@ -66,12 +66,12 @@ module tb_fifo;
         if (count != 8) begin $error("count=%0d", count); errors++; end
 
         for (int i = 0; i < 8; i++) begin
-            rd <= 1;
-            tick(1);
             if (rdata !== 16'(i)) begin
                 $error("fifo rdata %0d want %0d", rdata, i);
                 errors++;
             end
+            rd <= 1;
+            tick(1);
         end
         rd <= 0;
         tick(1);

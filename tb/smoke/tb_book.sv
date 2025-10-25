@@ -20,6 +20,7 @@ module tb_book;
     bbo_t [NUM_INSTRUMENTS-1:0] bbo_vec;
     logic [15:0] orders_used, levels_used;
     logic        busy;
+    logic [5:0]  dbg_state;
 
     quasar_book dut (
         .clk(clk), .rst_n(rst_n),
@@ -28,7 +29,8 @@ module tb_book;
         .bbo_vec(bbo_vec),
         .orders_used(orders_used),
         .levels_used(levels_used),
-        .busy(busy)
+        .busy(busy),
+        .dbg_state(dbg_state)
     );
 
     int errors;
@@ -39,12 +41,37 @@ module tb_book;
     endtask
 
     task automatic do_cmd(input book_req_t r, output book_rsp_t s);
-        req <= r;
-        req_valid <= 1'b1;
+        int guard;
+        @(negedge clk);
+        req = r;
+        req_valid = 1'b1;
+        guard = 0;
         @(posedge clk);
-        while (!req_ready) @(posedge clk);
-        req_valid <= 1'b0;
-        while (!rsp_valid) @(posedge clk);
+        while (!req_ready) begin
+            @(posedge clk);
+            guard++;
+            if (guard > 2000) begin
+                $error("do_cmd: timeout waiting req_ready cmd=%0h busy=%0d rsp=%0d",
+                       r.cmd, busy, rsp_valid);
+                s = '0;
+                req_valid = 1'b0;
+                return;
+            end
+        end
+        @(negedge clk);
+        req_valid = 1'b0;
+        guard = 0;
+        @(posedge clk);
+        while (!rsp_valid) begin
+            @(posedge clk);
+            guard++;
+            if (guard > 2000) begin
+                $error("do_cmd: timeout waiting rsp_valid cmd=%0h busy=%0d ready=%0d st=%0d",
+                       r.cmd, busy, req_ready, dbg_state);
+                s = '0;
+                return;
+            end
+        end
         s = rsp;
         @(posedge clk);
     endtask
@@ -99,11 +126,14 @@ module tb_book;
         rst_n = 1'b1;
         // book INIT clears 256 hash buckets
         tick(300);
+        $display("after init: ready=%0d busy=%0d used=%0d", req_ready, busy, orders_used);
 
         // -----------------------------------------------------------------
         // 1. Resting bid, BBO updates
         // -----------------------------------------------------------------
+        $display("issuing first insert");
         do_cmd(R(BOOK_INSERT, 0, SIDE_BID, 100, 10, 64'hA1), s);
+        $display("first insert done ok=%0d", s.ok);
         expect_ok("ins bid", s, 1'b1);
         do_cmd(R(BOOK_PEEK_BBO, 0, SIDE_ASK, 0, 0, 0), s);
         expect_eq("bbo bid px", s.bbo_bid_px, 100);
@@ -210,14 +240,14 @@ module tb_book;
         // -----------------------------------------------------------------
         // 11. Walk liquidity across two ask levels
         // -----------------------------------------------------------------
-        do_cmd(R(BOOK_INSERT, 3, SIDE_ASK, 10, 4, 64'hG1), s);
-        do_cmd(R(BOOK_INSERT, 3, SIDE_ASK, 11, 7, 64'hG2), s);
-        do_cmd(R(BOOK_WALK_LIQ, 3, SIDE_BID, 11, 100, 64'hG3), s);
+        do_cmd(R(BOOK_INSERT, 3, SIDE_ASK, 10, 4, 64'h71), s);
+        do_cmd(R(BOOK_INSERT, 3, SIDE_ASK, 11, 7, 64'h72), s);
+        do_cmd(R(BOOK_WALK_LIQ, 3, SIDE_BID, 11, 100, 64'h73), s);
         expect_eq("walk 11", s.walk_qty, 11);
-        do_cmd(R(BOOK_WALK_LIQ, 3, SIDE_BID, 10, 100, 64'hG3), s);
+        do_cmd(R(BOOK_WALK_LIQ, 3, SIDE_BID, 10, 100, 64'h73), s);
         expect_eq("walk 4", s.walk_qty, 4);
-        do_cmd(R(BOOK_CANCEL, 3, SIDE_ASK, 0, 0, 64'hG1), s);
-        do_cmd(R(BOOK_CANCEL, 3, SIDE_ASK, 0, 0, 64'hG2), s);
+        do_cmd(R(BOOK_CANCEL, 3, SIDE_ASK, 0, 0, 64'h71), s);
+        do_cmd(R(BOOK_CANCEL, 3, SIDE_ASK, 0, 0, 64'h72), s);
 
         // -----------------------------------------------------------------
         // 12. Hash collisions: oids that xor to the same bucket
@@ -236,39 +266,39 @@ module tb_book;
         // -----------------------------------------------------------------
         // 13. Non-crossing match is a no-op
         // -----------------------------------------------------------------
-        do_cmd(R(BOOK_INSERT, 5, SIDE_ASK, 200, 3, 64'hH1), s);
-        do_cmd(R(BOOK_MATCH_ONE, 5, SIDE_BID, 199, 3, 64'hH2), s);
+        do_cmd(R(BOOK_INSERT, 5, SIDE_ASK, 200, 3, 64'h81), s);
+        do_cmd(R(BOOK_MATCH_ONE, 5, SIDE_BID, 199, 3, 64'h82), s);
         expect_eq("no cross", s.crossed, 0);
-        do_cmd(R(BOOK_CANCEL, 5, SIDE_ASK, 0, 0, 64'hH1), s);
+        do_cmd(R(BOOK_CANCEL, 5, SIDE_ASK, 0, 0, 64'h81), s);
 
         // -----------------------------------------------------------------
         // 14. STP: same firm at BBO returns REJ_STP without consuming
         // -----------------------------------------------------------------
-        do_cmd(R(BOOK_INSERT, 5, SIDE_BID, 40, 9, 64'hI1, 8'h42), s);
+        do_cmd(R(BOOK_INSERT, 5, SIDE_BID, 40, 9, 64'h91, 8'h42), s);
         begin
             book_req_t rr;
-            rr = R(BOOK_MATCH_ONE, 5, SIDE_ASK, 40, 9, 64'hI2, 8'h42);
+            rr = R(BOOK_MATCH_ONE, 5, SIDE_ASK, 40, 9, 64'h92, 8'h42);
             rr.stp = STP_CANCEL_TAKER;
             do_cmd(rr, s);
         end
         expect_eq("stp rej", s.reject, REJ_STP);
-        do_cmd(R(BOOK_LOOKUP_OID, 5, SIDE_BID, 0, 0, 64'hI1), s);
+        do_cmd(R(BOOK_LOOKUP_OID, 5, SIDE_BID, 0, 0, 64'h91), s);
         expect_eq("stp resting lives", s.found, 1);
-        do_cmd(R(BOOK_CANCEL, 5, SIDE_BID, 0, 0, 64'hI1), s);
+        do_cmd(R(BOOK_CANCEL, 5, SIDE_BID, 0, 0, 64'h91), s);
 
         // -----------------------------------------------------------------
         // 15. Multi-instrument isolation
         // -----------------------------------------------------------------
-        do_cmd(R(BOOK_INSERT, 6, SIDE_BID, 8, 1, 64'hJ1), s);
-        do_cmd(R(BOOK_INSERT, 7, SIDE_ASK, 9, 1, 64'hJ2), s);
+        do_cmd(R(BOOK_INSERT, 6, SIDE_BID, 8, 1, 64'hA11), s);
+        do_cmd(R(BOOK_INSERT, 7, SIDE_ASK, 9, 1, 64'hA12), s);
         do_cmd(R(BOOK_PEEK_BBO, 6, SIDE_ASK, 0, 0, 0), s);
         expect_eq("inst6 ask empty", s.ask_valid, 0);
         expect_eq("inst6 bid", s.bbo_bid_px, 8);
         do_cmd(R(BOOK_PEEK_BBO, 7, SIDE_BID, 0, 0, 0), s);
         expect_eq("inst7 bid empty", s.bid_valid, 0);
         expect_eq("inst7 ask", s.bbo_ask_px, 9);
-        do_cmd(R(BOOK_CANCEL, 6, SIDE_BID, 0, 0, 64'hJ1), s);
-        do_cmd(R(BOOK_CANCEL, 7, SIDE_ASK, 0, 0, 64'hJ2), s);
+        do_cmd(R(BOOK_CANCEL, 6, SIDE_BID, 0, 0, 64'hA11), s);
+        do_cmd(R(BOOK_CANCEL, 7, SIDE_ASK, 0, 0, 64'hA12), s);
 
         tick(4);
         $display("tb_book: %0d checks, %0d errors, orders_used=%0d levels_used=%0d",
