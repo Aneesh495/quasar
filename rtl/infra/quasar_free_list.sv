@@ -38,7 +38,7 @@ module quasar_free_list #(
             wr_ptr <= (AW+1)'(N);   // pre-filled 0..N-1
             rd_ptr <= '0;
             for (i = 0; i < N; i++)
-                mem[i] <= PTR_W'(i);
+                mem[i] = PTR_W'(i);
         end else begin
             if (do_pop)
                 rd_ptr <= rd_ptr + (AW+1)'(1);

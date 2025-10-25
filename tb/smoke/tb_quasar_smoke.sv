@@ -1,5 +1,5 @@
 // =============================================================================
-// Verilator smoke: quasar_core, 256-bit AXIS, single clock.
+// Core smoke test: quasar_core, 256-bit AXIS, single clock.
 // Directed stream: rest, cross, partial, cancel, replace, modify, CRC fail,
 // AXI-Lite VERSION/CTRL/counter reads.  Scoreboard is a lightweight in-TB
 // checker (the C++ golden book is used by the UVM-lite path).
@@ -55,8 +55,10 @@ module tb_quasar_smoke;
 
     always_ff @(posedge clk) begin
         if (m_tvalid && m_tready) begin
-            evq.push_back(event_t'(m_tdata));
-            unique case (event_t'(m_tdata).ev)
+            event_t ev_beat;
+            ev_beat = event_t'(m_tdata);
+            evq.push_back(ev_beat);
+            unique case (ev_beat.ev)
                 EV_FILL:        n_fill++;
                 EV_ACK:         n_ack++;
                 EV_REJECT:      n_rej++;
@@ -74,49 +76,53 @@ module tb_quasar_smoke;
     endtask
 
     task automatic axil_wr(input logic [15:0] a, input logic [31:0] d);
-        awaddr <= a; awvalid <= 1'b1; awprot <= 3'b0;
-        wdata  <= d; wvalid  <= 1'b1; wstrb  <= 4'hF;
-        bready <= 1'b1;
-        fork
-            begin
-                @(posedge clk);
-                while (!awready) @(posedge clk);
-                awvalid <= 1'b0;
-            end
-            begin
-                @(posedge clk);
-                while (!wready) @(posedge clk);
-                wvalid <= 1'b0;
-            end
-        join
+        bit aw_done, w_done;
+        aw_done = 0;
+        w_done  = 0;
+        @(negedge clk);
+        awaddr = a; awvalid = 1'b1; awprot = 3'b0;
+        wdata  = d; wvalid  = 1'b1; wstrb  = 4'hF;
+        bready = 1'b1;
+        while (!aw_done || !w_done) begin
+            @(posedge clk);
+            if (awvalid && awready) aw_done = 1'b1;
+            if (wvalid && wready)   w_done  = 1'b1;
+            @(negedge clk);
+            if (aw_done) awvalid = 1'b0;
+            if (w_done)  wvalid  = 1'b0;
+        end
         @(posedge clk);
         while (!bvalid) @(posedge clk);
-        @(posedge clk);
-        bready <= 1'b0;
+        @(negedge clk);
+        bready = 1'b0;
     endtask
 
     task automatic axil_rd(input logic [15:0] a, output logic [31:0] d);
-        araddr <= a; arvalid <= 1'b1; arprot <= 3'b0; rready <= 1'b1;
+        @(negedge clk);
+        araddr = a; arvalid = 1'b1; arprot = 3'b0; rready = 1'b1;
         @(posedge clk);
         while (!arready) @(posedge clk);
-        arvalid <= 1'b0;
+        @(negedge clk);
+        arvalid = 1'b0;
         @(posedge clk);
         while (!rvalid) @(posedge clk);
         d = rdata;
-        @(posedge clk);
-        rready <= 1'b0;
+        @(negedge clk);
+        rready = 1'b0;
     endtask
 
     task automatic send_msg(input msg_t m);
-        s_tdata  <= 256'(m);
-        s_tkeep  <= {32{1'b1}};
-        s_tlast  <= 1'b1;
-        s_ferr   <= 1'b0;
-        s_tvalid <= 1'b1;
+        @(negedge clk);
+        s_tdata  = 256'(m);
+        s_tkeep  = {32{1'b1}};
+        s_tlast  = 1'b1;
+        s_ferr   = 1'b0;
+        s_tvalid = 1'b1;
         @(posedge clk);
         while (!s_tready) @(posedge clk);
-        s_tvalid <= 1'b0;
-        s_tlast  <= 1'b0;
+        @(negedge clk);
+        s_tvalid = 1'b0;
+        s_tlast  = 1'b0;
     endtask
 
     task automatic wait_ev(input logic [7:0] kind, output event_t e, input int timeout = 4000);
@@ -132,7 +138,8 @@ module tb_quasar_smoke;
                 t++;
             end
         end
-        $error("timeout waiting for %s", ev_name(kind));
+        $error("timeout waiting for %s (queue=%0d fills=%0d acks=%0d rej=%0d)",
+               ev_name(kind), evq.size(), n_fill, n_ack, n_rej);
         errors++;
         e = '0;
     endtask
@@ -142,7 +149,7 @@ module tb_quasar_smoke;
         while (evq.size() > 0) void'(evq.pop_front());
     endtask
 
-    task automatic expect(input string tag, input logic [63:0] a, input logic [63:0] b);
+    task automatic check_eq(input string tag, input logic [63:0] a, input logic [63:0] b);
         if (a !== b) begin
             $error("%s: got %0h want %0h", tag, a, b);
             errors++;
@@ -163,24 +170,26 @@ module tb_quasar_smoke;
         tick(10);
         rst_n = 1;
         tick(400); // reset sync + book INIT
+        $display("smoke: out of reset, starting AXI-Lite");
 
         // AXI-Lite identity
         axil_rd(CSR_VERSION, rd);
-        expect("version", rd, QUASAR_VERSION);
+        check_eq("version", rd, QUASAR_VERSION);
         axil_rd(CSR_FEATURE, rd);
-        expect("feature", rd, QUASAR_FEATURE);
+        check_eq("feature", rd, QUASAR_FEATURE);
         axil_wr(CSR_SCRATCH, 32'hA5A5_5A5A);
         axil_rd(CSR_SCRATCH, rd);
-        expect("scratch", rd, 32'hA5A5_5A5A);
+        check_eq("scratch", rd, 32'hA5A5_5A5A);
         axil_wr(CSR_CTRL, 32'h0000_0009); // enable + bbo
         axil_wr(CSR_INST_MASK, 32'h0000_00FF);
 
         // Resting bid 100 x 10
+        $display("smoke: send resting bid");
         m = mk_msg(OP_NEW, 0, 1, SIDE_BID, TIF_GTC, STP_OFF, 1'b0,
                    32'd10, 32'd100, 64'h1001);
         send_msg(m);
         wait_ev(EV_ACK, e);
-        expect("ack qty rest", e.qty, 10);
+        check_eq("ack qty rest", e.qty, 10);
 
         // Crossing ask 100 x 4 → fill 4, ack residual 0 (IOC would drop;
         // GTC residual 0 because fully filled? qty 4 < 10 so fill 4, rest 0 on taker)
@@ -188,8 +197,8 @@ module tb_quasar_smoke;
                    32'd4, 32'd100, 64'h1002);
         send_msg(m);
         wait_ev(EV_FILL, e);
-        expect("fill qty", e.qty, 4);
-        expect("fill px", e.price, 100);
+        check_eq("fill qty", e.qty, 4);
+        check_eq("fill px", e.price, 100);
         wait_ev(EV_ACK, e);
 
         // Cancel residual bid
@@ -197,7 +206,7 @@ module tb_quasar_smoke;
                    32'd0, 32'd0, 64'h1001);
         send_msg(m);
         wait_ev(EV_CANCEL_ACK, e);
-        expect("cxl qty", e.qty, 6);
+        check_eq("cxl qty", e.qty, 6);
 
         // Resting ask, modify down, then hit it
         m = mk_msg(OP_NEW, 1, 3, SIDE_ASK, TIF_GTC, STP_OFF, 1'b0,
@@ -208,13 +217,13 @@ module tb_quasar_smoke;
                    32'd5, 32'd50, 64'h2001);
         send_msg(m);
         wait_ev(EV_MODIFY_ACK, e);
-        expect("mod qty", e.qty, 5);
+        check_eq("mod qty", e.qty, 5);
 
         m = mk_msg(OP_NEW, 1, 4, SIDE_BID, TIF_IOC, STP_OFF, 1'b0,
                    32'd5, 32'd50, 64'h2002);
         send_msg(m);
         wait_ev(EV_FILL, e);
-        expect("ioc fill", e.qty, 5);
+        check_eq("ioc fill", e.qty, 5);
         wait_ev(EV_ACK, e);
 
         // Replace: rest bid, replace price up (loses priority / reinserts)
@@ -230,7 +239,7 @@ module tb_quasar_smoke;
                    32'd0, 32'd0, 64'h3001);
         send_msg(m);
         wait_ev(EV_CANCEL_ACK, e);
-        expect("rep cxl px", e.price, 12);
+        check_eq("rep cxl px", e.price, 12);
 
         // CRC failure
         m = mk_msg(OP_NEW, 0, 1, SIDE_BID, TIF_GTC, STP_OFF, 1'b0,
@@ -238,21 +247,21 @@ module tb_quasar_smoke;
         m.crc32 ^= 32'hFFFF;
         send_msg(m);
         wait_ev(EV_REJECT, e);
-        expect("crc rej", e.reject, REJ_CRC);
+        check_eq("crc rej", e.reject, REJ_CRC);
 
         // Bad instrument
         m = mk_msg(OP_NEW, 8'h20, 1, SIDE_BID, TIF_GTC, STP_OFF, 1'b0,
                    32'd1, 32'd1, 64'h4002);
         send_msg(m);
         wait_ev(EV_REJECT, e);
-        expect("inst rej", e.reject, REJ_INSTRUMENT);
+        check_eq("inst rej", e.reject, REJ_INSTRUMENT);
 
         // Cancel missing
         m = mk_msg(OP_CANCEL, 0, 1, SIDE_BID, TIF_GTC, STP_OFF, 1'b0,
                    32'd0, 32'd0, 64'h0BAD);
         send_msg(m);
         wait_ev(EV_REJECT, e);
-        expect("miss cxl", e.reject, REJ_NOT_FOUND);
+        check_eq("miss cxl", e.reject, REJ_NOT_FOUND);
 
         // Post-only that would take
         m = mk_msg(OP_NEW, 0, 9, SIDE_ASK, TIF_GTC, STP_OFF, 1'b0,
@@ -263,7 +272,7 @@ module tb_quasar_smoke;
                    32'd3, 32'd80, 64'h5002);
         send_msg(m);
         wait_ev(EV_REJECT, e);
-        expect("post only", e.reject, REJ_POST_ONLY);
+        check_eq("post only", e.reject, REJ_POST_ONLY);
         m = mk_msg(OP_CANCEL, 0, 9, SIDE_ASK, TIF_GTC, STP_OFF, 1'b0,
                    32'd0, 32'd0, 64'h5001);
         send_msg(m);
@@ -274,7 +283,7 @@ module tb_quasar_smoke;
                    32'd99, 32'd1, 64'h6001);
         send_msg(m);
         wait_ev(EV_REJECT, e);
-        expect("fok", e.reject, REJ_FOK);
+        check_eq("fok", e.reject, REJ_FOK);
 
         drain(200);
 
