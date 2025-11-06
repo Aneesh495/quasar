@@ -225,25 +225,27 @@ module quasar_core
     logic      eg_valid, eg_ready;
     event_t    eg_ev;
     logic      rk_rej_hold;
-    event_t    rk_rej_ev;
+    event_t    rk_rej_q;
 
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n)
+        if (!rst_n) begin
             rk_rej_hold <= 1'b0;
-        else if (rk_rej_valid && !rk_rej_hold)
+            rk_rej_q    <= '0;
+        end else if (rk_rej_valid && !rk_rej_hold) begin
             rk_rej_hold <= 1'b1;
-        else if (rk_rej_hold && eg_ready && !mt_ev_valid)
+            rk_rej_q    <= mk_event(EV_REJECT, rk_out_cmd.inst, rk_out_cmd.firm,
+                                    rk_out_cmd.side, rk_rej,
+                                    rk_out_cmd.qty, rk_out_cmd.price, rk_out_cmd.oid,
+                                    32'h0, rk_out_cmd.seq, cycle);
+        end else if (rk_rej_hold && eg_ready) begin
             rk_rej_hold <= 1'b0;
+        end
     end
 
     always_comb begin
-        rk_rej_ev = mk_event(EV_REJECT, rk_out_cmd.inst, rk_out_cmd.firm,
-                             rk_out_cmd.side, rk_rej,
-                             rk_out_cmd.qty, rk_out_cmd.price, rk_out_cmd.oid,
-                             32'h0, rk_out_cmd.seq, cycle);
-        if (rk_rej_valid || rk_rej_hold) begin
+        if (rk_rej_hold) begin
             eg_valid    = 1'b1;
-            eg_ev       = rk_rej_ev;
+            eg_ev       = rk_rej_q;
             mt_ev_ready = 1'b0;
         end else begin
             eg_valid    = mt_ev_valid;
