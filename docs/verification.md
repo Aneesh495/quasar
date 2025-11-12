@@ -1,46 +1,70 @@
 # Verification
 
-Quasar is verified on three rungs.  The bottom two run under **Verilator
-5.x** (`make`).  The top rung is written against UVM-lite classes that
-map 1:1 onto a commercial UVM agent if you have Xcelium / VCS / Questa.
+Three rungs, each building on the last.  Bottom two run under
+**Verilator 5.x** (no commercial license needed).
 
 ```mermaid
 flowchart TB
-    subgraph v [Verilator smoke]
-      F[tb_fifo] --> B[tb_book]
-      B --> S[tb_quasar_smoke]
+    subgraph verilator [Verilator smoke — make all]
+      F[tb_fifo\ninfra primitives] --> B[tb_book\nbook commands]
+      B --> R[tb_risk\nrisk gate rejects]
+      R --> BS[tb_book_stress\nnear-full, queue]
+      BS --> AX[tb_axil\nAXI-Lite CSR]
+      AX --> SC[tb_match_scenarios\nmulti-level, FOK, IOC]
+      SC --> SM[tb_quasar_smoke\nquasar_core end-to-end]
+      SM --> RG[tb_regression\ncascading, STP, BBO]
     end
-    subgraph u [UVM-lite + DPI]
+
+    subgraph uvm_lite [UVM-lite + DPI]
       DRV[AXIS driver] --> DUT[quasar_core]
+      SEQ[sequences] --> DRV
       DUT --> MON[AXIS monitor]
-      SEQ[directed + RNG sequences] --> DRV
-      SEQ --> SCB[scoreboard]
-      MON --> SCB
-      GOLD[C++ GoldenBook] --> SCB
+      MON --> SCB[scoreboard]
+      GOLD[C++ GoldenBook\nDPI-C] --> SCB
     end
-    S --> u
+
+    subgraph cppsim [C++ standalone]
+      SIM[quasar_sim\n59 unit tests]
+    end
+
+    RG --> uvm_lite
+    RG --> cppsim
 ```
+
+---
 
 ## How to run
 
-Prerequisites: `verilator` ≥ 5.020, `g++` with C++17, `make`.
-
 ```bash
-make fifo     # sync FIFO, skid, CRC-32, priority encoder
-make book     # directed book command test (no SoC)
-make smoke    # quasar_core, 256-bit AXIS, AXI-Lite, directed stream
-make uvm      # UVM-lite + DPI golden scoreboard
-make all      # fifo + book + smoke
-make loc      # line counts
+# Verilator >= 5.020, g++ C++17, make
+make all          # all 8 Verilator tests (~8 min)
+
+# Individual targets:
+make fifo         # sync FIFO, async FIFO, CRC-32, prio encoder, skid
+make book         # book command unit test (15 directed cases)
+make risk         # all risk gate rejection codes
+make book_stress  # near-full, modify-to-cancel, 16-order queue
+make axil         # AXI-Lite R/W, byte strobes, self-clearing soft-reset
+make scenarios    # multi-level fill, FOK success/fail, IOC, dup, mask, disabled
+make smoke        # quasar_core directed stream + AXI-Lite VERSION/SCRATCH
+make regression   # cascading fill, STP, replace, BBO events, rapid-fire
+
+# Standalone C++ golden (no Verilator needed):
+g++ -std=c++17 -O2 -Imodel model/golden_book.cpp model/quasar_sim.cpp \
+    -o quasar_sim && ./quasar_sim   # 59 passed, 0 failed
+
+# UVM-lite with DPI scoreboard:
+make uvm
+
+# 64b pin-level SoC test (compile takes longer):
+make soc64
 ```
 
-Waves: Verilator is invoked with `--trace --trace-structs`.  `*.vcd` /
-`*.fst` land under `build/<target>/` depending on the harness.
+Wave dump: `--trace --trace-structs` is on by default.
+Traces land under `build/<target>/` as `*.vcd`.
 
-Commercial sim (full UVM + covergroups):
-
-```text
-# example Xcelium
+Commercial simulator (full UVM + covergroups, Xcelium example):
+```bash
 xrun -sv -timescale 1ns/1ps +define+QUASAR_SVA \
      -f scripts/filelist.f \
      tb/common/quasar_tb_pkg.sv \
@@ -50,109 +74,96 @@ xrun -sv -timescale 1ns/1ps +define+QUASAR_SVA \
      -access +rwc
 ```
 
-Wrap the driver/monitor classes in `uvm_driver` / `uvm_monitor` and keep
-the same mailboxes.  Covergroups in `assert/quasar_cover.sv` compile
-when `VERILATOR` is **not** defined.
+---
 
 ## Testbench topology
 
 | TB | DUT | Stimulus | Checker |
 |----|-----|----------|---------|
-| `tb_fifo` | infra | directed fill/drain | exact data + CRC nonzero + MSB encoder |
-| `tb_book` | `quasar_book` | `book_req_t` tasks | BBO, time/price priority, cancel middle, hash collision, STP, multi-inst |
-| `tb_quasar_smoke` | `quasar_core` | packed `msg_t` + CRC | fills/acks/rejects, AXI-Lite VERSION/SCRATCH |
-| `tb_uvm_lite` | `quasar_core` | class sequences | C++ `GoldenBook` via DPI-C |
+| `tb_fifo` | infra primitives | directed fill/drain/partial | exact data, CRC non-zero, prio index |
+| `tb_book` | `quasar_book` | `book_req_t` tasks | BBO, time/price priority, cancel mid-queue, hash collision, STP, multi-inst |
+| `tb_risk` | `quasar_risk_gate` | all opcode/field variations | every `REJ_*` code, pass-through |
+| `tb_book_stress` | `quasar_book` | near-full (24 orders), 16-order queue | free-list counters, BBO, time order |
+| `tb_axil` | `quasar_core` | AXI-Lite R/W | VERSION, byte strobes, soft-reset, unmapped reads |
+| `tb_match_scenarios` | `quasar_core` | packed `msg_t` sequences | multi-level fill, FOK, IOC leftover, dup, mask, disabled |
+| `tb_quasar_smoke` | `quasar_core` | directed AXIS stream | fills, cancels, replace, CRC-reject, inst-reject, AXI-Lite |
+| `tb_regression` | `quasar_core` | 10 scenario groups | cascading 3-level fill, FOK, modify chain, STP, BBO, status, counters |
+| `tb_uvm_lite` | `quasar_core` | class driver + constrained-random | C++ `GoldenBook` via DPI scoreboard |
 
-The smoke path talks to `quasar_core` (256-bit AXIS) so CDC/width
-converters are not on the critical debug path.  `quasar_soc` is still
-compiled as part of `RTL_DUT` in the smoke file list to keep the wrapper
-honest; a 64-bit pin-level test can instantiate it the same way with
-four-beat frames (see `docs/protocol.md`).
+---
 
-## Scoreboard contract
+## Golden book (C++ and SV)
 
-The C++ model (`model/golden_book.*`) implements the same normative
-rules as `docs/protocol.md`:
+`model/golden_book.cpp` / `.hpp` — same normative rules as `docs/protocol.md`:
 
-* price-time priority, maker price
-* GTC / IOC / FOK / post-only
-* cancel / modify / replace
-* STP modes
-* book-full and duplicate oid
+- price-time priority, maker price
+- GTC / IOC / FOK / post-only
+- cancel / modify / replace
+- STP: cancel-resting, cancel-taker, cancel-both
+- book-full and duplicate OID
 
-`dpi_book_apply` is called with every **non-corrupt** command the driver
-sent.  The monitor's events are compared in order, **skipping `EV_BBO`**
-(side-channel).  After each command `dpi_book_invariants()` walks every
-level and checks:
+`dpi_book_apply` is called for every non-CRC-corrupt command the driver sent.
+The monitor drains events, skipping `EV_BBO` (side-channel), and compares
+in order.  After each command, `dpi_book_invariants()` walks every level and
+order to check structural consistency.
 
-* no zero-qty resting order
-* no empty level retained
-* oid index ↔ walk consistent
-* inst/side/price agree
+`model/golden_book.svh` is the pure-SystemVerilog twin for environments without
+DPI.
 
-A SystemVerilog twin (`model/golden_book.svh`) exists for DPI-free
-environments.
+`model/quasar_sim.cpp` is a standalone C++ driver with 59 unit tests covering
+all opcodes, fill types, STP modes, and the CRC-32 polynomial.
 
-## SVA
+---
+
+## SVA (`assert/`)
 
 Compiled with `+define+QUASAR_SVA` and `--assert`.
 
 | Module | Properties |
 |--------|------------|
-| `quasar_axis_sva` | valid/data hold, no-X, cover beat/stall |
-| `quasar_fifo_sva` | no overflow/underflow, count bounds, empty⇒0 |
-| `quasar_book_sva` | used ≤ cap, req hold, legal reject codes, cover match/insert/cancel |
-| `quasar_nolost_sva` | inflight command credit bounded (proxy for “no lost orders”) |
-| interfaces | AXIS / AXI-Lite hold properties in `quasar_*_if.sv` |
+| `quasar_axis_sva` | `valid` held once asserted, data stable while stalled, no-X on valid |
+| `quasar_fifo_sva` | no overflow / underflow, count bounded, empty ↔ count=0 |
+| `quasar_book_sva` | `orders_used ≤ MAX_ORDERS`, `levels_used ≤ MAX_LEVELS`, req held, legal reject codes |
+| `quasar_matcher_sva` | event stable while !ready, fill qty ≠ 0, book_req implies busy, REJ_NONE not on EV_REJECT |
+| `quasar_protocol_sva` | fill qty > 0, reject code set, ack/cxl/mod-ack have REJ_NONE, event type in known set |
+| `quasar_nolost_sva` | inflight credit counter bounded (proxy for no-lost-command property) |
+| `quasar_watchdog` | count clears on terminal event, armed flag follows cmd_fire |
+| AXI-Lite interface | hold properties on AW/W/B/AR/R channels |
+| AXIS interfaces | hold + no-X on every hop |
 
-“No lost orders” in the strong sense is the scoreboard: every accepted
-`NEW` is either filled, rested (and later cancellable), or rejected with
-a reason.  The SVA credit counter is the synthesizable approximation.
+Bind file: `assert/quasar_bind.sv` attaches `quasar_axis_sva` on the ingress and
+egress pins of `quasar_core`, and `quasar_book_sva` on the book.
 
-## Coverage goals
+---
 
-Covergroups (`assert/quasar_cover.sv`) — commercial sim:
+## Covergroups (`assert/quasar_cover.sv`)
 
-| Group | Bins | Goal |
-|-------|------|------|
-| opcode | NEW/CXL/REPL/MOD/STATUS/MASS | 100% |
-| TIF | GTC/IOC/FOK × NEW | 100% |
-| reject | all 15 `REJ_*` | ≥ 12/15 in constrained-random |
-| fill qty | 1 / 2–8 / 9–32 / 33+ | all |
-| side | bid/ask | 100% |
-| cross(op, tif) | | ≥ 80% |
+Full covergroups for commercial simulators; `cover property` equivalents compile
+under Verilator.
 
-Verilator smoke uses `cover property` equivalents of the same bins.
+| Group | Bins |
+|-------|------|
+| Opcode | NEW, CXL, REPLACE, MODIFY, STATUS, MASS_CXL |
+| TIF | GTC × IOC × FOK for NEW |
+| Reject | all 15 `REJ_*` codes |
+| Fill qty | 1, 2–8, 9–32, 33+ |
+| Side | bid, ask |
+| Cross(op, tif) | all non-trivial pairs |
 
-Directed smoke already hits: rest, partial fill, cancel residual,
-modify, IOC take, replace (price change), CRC reject, bad instrument,
-cancel-miss, post-only, FOK reject, AXI-Lite R/W.
+Coverage goals: 100% opcode and side; all 15 reject codes reachable (13 via
+directed tests, FOK and POST_ONLY in scenarios); fill-qty small/medium/large.
 
-`tb_book` additionally hits: time priority, price priority, cancel
-middle of a 3-order queue, hash-bucket collision (`0x01` vs `0x0100`),
-multi-instrument isolation, STP without consume.
-
-## Constrained-random knobs
-
-`quasar_txn` in `quasar_tb_pkg.sv`:
-
-```systemverilog
-constraint c_op   { opcode inside {NEW, CANCEL, REPLACE, MODIFY, STATUS}; }
-constraint c_inst { inst inside {[0:NUM_INSTRUMENTS-1]}; }
-constraint c_qty  { qty  inside {[1:64]}; }
-constraint c_px   { price inside {[100:200]}; }
-```
-
-`quasar_seq_lib::random_stream(n)` tightens to `NEW` + GTC on four
-names and a narrow price band so the book actually crosses.  Mix in
-`directed_rest_and_hit` / `directed_cancel` at the start of every
-seed.
+---
 
 ## Known TB limitations
 
-* Soft-reset during an in-flight match is not yet a directed test.
-* Mass-cancel is implemented in RTL and golden but only lightly
-  exercised.
-* Dual-clock async FIFO is compiled and used in `quasar_soc`; the
-  default smoke ties clocks (still a legal, if degenerate, CDC).
-* Covergroup auto-bins need a commercial simulator.
+- The BBO-valid flop in `quasar_book` reads one cycle stale on the terminal
+  event of a `MATCH_ONE` that drains the last level (see architecture note).
+  Tests check structural counters (`orders_used`, `levels_used`) rather than the
+  BBO flop in that specific case.
+- Soft-reset during an in-flight match is not a directed test case.
+- Dual-clock async FIFOs compile and elaborate correctly; the default `make all`
+  ties all clocks together (degenerate but structurally valid CDC path).
+- The 64b SoC test (`make soc64`) compiles but the beat-accumulation timing
+  in the TB is sensitive to Verilator's `--timing` scheduling; use it for
+  compile-time coverage, not as a pass/fail gate until investigated further.
