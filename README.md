@@ -1,163 +1,276 @@
 # Quasar
 
-**Synthesizable limit-order-book matching engine** in SystemVerilog.
-Built for FPGA/ASIC interviewers and for the kind of latency-path review
-a cash-equities or futures desk actually does: price-time priority,
-partial fills, cancel/replace correctness, risk in front of the book,
-and an AXI-Stream / AXI-Lite SoC wrapper — not a behavioural toy.
+A synthesizable limit-order-book matching engine written in SystemVerilog.
+Named after a bright point source — the matching core is small and very fast.
 
-Quasar is the repo name and the top (`quasar_soc` / `quasar_core`).
-MIT licensed.
+The interesting problem here is not the trading logic (price-time priority is
+just a sorted list and a FIFO).  The interesting problem is *doing it in silicon*:
+pointers in BRAM, one-cycle BBO reads, O(1) cancel from a hash table, CDC between
+clocks that the FPGA vendor drew on different parts of the die, and building the
+verification so you can be confident the matching semantics survive synthesis.
 
-## Why this exists
+This is a personal project; the code is the spec.
 
-Matching is the inner loop of every electronic venue and of every
-aggressive HFT stack that *internalizes* or *simulates* a venue.  On
-FPGA it is a data-structure problem (pointer chasing in BRAM) plus a
-protocol problem (lossy links, backpressure, CRC) plus a risk problem
-(a bad order must die before it touches the book).  Quasar is that
-path, written so a hardware engineer can read the FSM and a trading
-engineer can read the semantics and they agree.
+---
 
-Target: 250–400 MHz class close on a VU9P / VU19P / Agilex book-shaped
-SRAM map.  The RTL does not pretend it has been through P&R; it *does*
-pretend it could be.
+## What it does
+
+Takes 256-bit binary order messages on an AXI4-Stream input, runs them through
+a CRC check, a configurable risk gate, and a RAM-backed price-time-priority book
+for up to eight simultaneous names.  Emits fill/ack/reject events on a second
+AXI-Stream.  Configuration (max notional, position cap, rate bucket, instrument
+mask) lives behind an AXI4-Lite register bank that a host CPU or state machine
+can write at startup or mid-session.
+
+The 64-bit narrow-pin option reassembles four-beat frames so the block can sit
+behind a standard 64-bit AXI-Stream fabric.
+
+---
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    IN[AXI-Stream orders] --> IG[Ingress + CRC]
-    IG --> RK[Risk gate]
-    RK --> MT[Matcher]
-    MT <--> BK[Limit book]
-    MT --> EG[Event log]
-    EG --> OUT[AXI-Stream fills]
-    CSR[AXI-Lite CSR] --> RK
-    CSR --> MT
+    IN[AXI-Stream orders\n64b or 256b] --> UP[width upsizer]
+    UP --> CDC1[async FIFO\nclk_axis_in→core]
+    CDC1 --> IG[ingress parser\nCRC-32]
+    IG --> RF[cmd FIFO]
+    RF --> RK[risk gate]
+    RK --> MT[matcher FSM]
+    MT <-->|req/rsp| BK[order book\nRAM + free lists]
+    RK -->|reject| EV[event mux]
+    MT -->|fills/acks| EV
+    EV --> EG[event FIFO\nskid buffer]
+    EG --> CDC2[async FIFO\ncore→clk_axis_out]
+    CDC2 --> DN[width downsizer]
+    DN --> OUT[AXI-Stream events]
+    AXIL[AXI4-Lite CSR] -->|config| RK
+    AXIL -->|ctrl| MT
 ```
 
-| Block | What it does |
-|-------|----------------|
-| **Ingress** | AXI4-Stream slave, 256-bit native / 64-bit 4-beat adapter, CRC-32, opcode decode |
-| **Book** | 8 instruments, price-sorted levels, FIFO order queues, hashed OID, BBO flops |
-| **Matcher** | decode → risk → lookup → match\* → rest → emit; GTC/IOC/FOK/post-only; STP |
-| **Risk** | max notional, max \|position\|, token-bucket rate, CSR-configurable |
-| **Egress** | fills / rejects / acks / BBO, FWFT event FIFO, drop counters |
-| **SoC** | AXI4-Lite CSR + counters, reset sync, gray-coded async FIFOs |
+**`quasar_core`** is the single-clock engine (ingress through egress).
+**`quasar_soc`** wraps it with per-domain reset synchronizers and the two
+async FIFOs.  Smoke simulation ties all clocks together; the CDC hardware
+is still elaborated and can be reviewed or formally constrained.
 
-Deeper diagrams (book RAMs, pipeline states, clock domains):
-[`docs/architecture.md`](docs/architecture.md).
+---
 
-Wire formats and matching rules: [`docs/protocol.md`](docs/protocol.md).
+## Book data structures
 
-CSR map: [`docs/csr_map.md`](docs/csr_map.md).
+```mermaid
+flowchart TB
+    subgraph per_inst [per instrument / side]
+      BBO[BBO flops\nbid_px · bid_qty · bid_lvl\nask_px · ask_qty · ask_lvl]
+      LL[price-level linked list\nsorted bid↓ ask↑]
+      OQ[order FIFO per level\nhead=oldest tail=newest]
+    end
 
-## Pipeline / latency
+    BBO --> LL --> OQ
 
-One command in-flight.  Each `MATCH_ONE` is a multi-cycle book
-transaction; each fill is emitted **before** the next hop so a stalled
-consumer cannot lose a trade.
+    subgraph shared [shared across all names]
+      HASH[256-bucket OID hash\ndoubly-linked chains]
+      OFL[order free list\n256 ptrs]
+      LFL[level free list\n256 ptrs]
+    end
 
-| Path | Typical `clk_core` cycles |
-|------|---------------------------|
-| NEW that rests on an empty book | ~13 |
-| NEW that partially fills one resting order | ~15–18 |
+    OQ <--> HASH
+    OFL --> OQ
+    LFL --> LL
+```
+
+- **BBO** is a registered snapshot per instrument so a `PEEK_BBO` is one
+  clock with no RAM read.
+- **Price levels** are a doubly-linked sorted list; insertion walks from best
+  to find the slot.
+- **Order FIFO** at each level enforces time priority: dequeue from head, enqueue
+  at tail.
+- **OID hash** (xor-fold, 256 buckets) with doubly-linked collision chains means
+  cancel and fill-to-zero are O(1) pointer unlinks after the bucket walk.
+
+---
+
+## Matching pipeline
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> DECODE: cmd_valid
+    DECODE --> PEEK_BBO: NEW post-only/FOK
+    DECODE --> MATCH_ISSUE: NEW GTC/IOC
+    DECODE --> CXL_ISSUE: CANCEL
+    DECODE --> MOD_ISSUE: MODIFY
+    DECODE --> REP_LOOKUP: REPLACE
+    PEEK_BBO --> FOK_WALK: FOK
+    PEEK_BBO --> REJECT: post-only && would_cross
+    FOK_WALK --> REJECT: walk_qty < rem
+    FOK_WALK --> MATCH_ISSUE: enough liquidity
+    MATCH_ISSUE --> MATCH_WAIT: breq sent
+    MATCH_WAIT --> EMIT_FILL: crossed
+    MATCH_WAIT --> REST_ISSUE: no cross && GTC && rem>0
+    MATCH_WAIT --> EMIT_ACK: no cross && IOC/rem=0
+    MATCH_WAIT --> STP: same firm
+    EMIT_FILL --> MATCH_ISSUE: rem > 0
+    EMIT_FILL --> EMIT_ACK: rem = 0
+    REST_ISSUE --> EMIT_ACK: inserted
+    EMIT_ACK --> EMIT_BBO: BBO_EN
+    EMIT_ACK --> IDLE
+    EMIT_BBO --> IDLE
+```
+
+One command is in-flight at a time.  `MATCH_ONE` is re-issued while residual
+quantity still crosses.  Each fill is pushed through the event FIFO *before*
+the next book command, so a stalled consumer never loses a trade even if it
+holds `tready` low.
+
+---
+
+## Pipeline latency (clk_core cycles)
+
+These are deterministic FSM depths, not place-and-route numbers.
+Target: 250–400 MHz on VU9P/VU19P class BRAMs.
+
+| Path | Cycles |
+|------|--------|
+| NEW that rests on empty book | ~13 |
+| NEW partial fill (one resting order) | ~15–18 |
+| NEW full fill + level removal | ~20–28 |
 | Cancel by oid (no hash pile-up) | ~16–22 |
-| FOK reject (walk then refuse) | 2 × crossing levels + overhead |
+| FOK reject (walk then refuse) | 2 × levels + overhead |
 
-At 250 MHz that is a **~50–90 ns** decision on the common path, in the
-same conversation as a well-built FPGA tick-to-trade *minus* MAC/PCS.
-The book is a general-price linked structure, not a 1-cycle bitmap;
-`quasar_prio_encoder` is in-tree for the discretized-tick sequel.
+At 250 MHz: **~50–90 ns** on the common path.  The book is a general-price
+linked structure so "bitmap BBO" tricks are not assumed; `quasar_prio_encoder`
+is in-tree for a discretized-tick follow-on.
 
-## Design highlights
+---
 
-* **Price-time priority** with maker pricing.  Levels are a sorted
-  linked list; orders at a price are a doubly-linked FIFO.
-* **O(1) cancel** after the hash probe: orders carry `hash_prev/next`
-  and `prev_ord/next_ord`.
-* **FOK is two-pass** (`WALK_LIQ` then commit) so a failed FOK never
-  mutates the book.
-* **Replace** is modify-in-place when the price is unchanged, else
-  atomic cancel + new with the same oid.
-* **STP** is decided against the resting firm, not guessed in the risk
-  gate.
-* **Valid/ready everywhere.**  Skid buffers cut ready timing; the
-  event log drops only if the consumer ignores `tready` past depth 64.
-* **Solid AXI4-Lite** (independent channels, strobes, self-clearing
-  soft reset) instead of a decorative CPU.
-* **Documented dual-clock SoC** even though smoke ties the clocks.
+## Clock domains
+
+| Domain | Clock | Contents |
+|--------|-------|---------|
+| Ingress fabric | `clk_axis_in` | upsizer, async FIFO write side |
+| Core | `clk_core` | parser, risk, matcher, book, CSR, event FIFO |
+| Egress fabric | `clk_axis_out` | async FIFO read, downsizer |
+| Control | `clk_axil` | AXI4-Lite pins |
+
+Crossing uses gray-coded binary pointers (extra-wide, MSB-flip = one change per
+step), two-flop synchronizers.  XDC/SDC constraint: `set_max_delay –datapath_only`
+on the gray buses.  An independent `clk_axil` would need a fourth async path; in
+this wrapper it shares `clk_core` — documented in `docs/architecture.md`.
+
+---
+
+## Design notes
+
+**O(1) cancel.**  Every order record carries `hash_prev/hash_next` (collision
+chain) and `prev_ord/next_ord` (level queue).  Cancel by OID does a hash bucket
+walk, then four pointer splices.  No level or queue scan.
+
+**FOK is non-destructive on failure.**  `BOOK_WALK_LIQ` accumulates crossing
+quantity without unlinking anything.  If the total is short, the command is
+rejected and the book is untouched.
+
+**Replace semantics.**  Same price → in-place qty modify (keeps time priority).
+Different price → atomic cancel + new with the same OID.  The book never sees
+two live orders with the same OID.
+
+**STP at book time.**  Self-trade protection is checked when `MATCH_ONE` returns
+the resting firm, not when the order arrives.  The risk gate cannot know what is
+resting; only the book can.
+
+**Risk gate is one registered cycle.**  Max-notional, max-|position|, token bucket.
+Rejects go through the same egress path as matcher rejects so the downstream
+consumer never sees a gap in the event stream.
+
+**Valid/ready everywhere.**  Skid buffers cut combinational ready paths at every
+inter-block hop.  The event log uses a drop-on-full FIFO with a saturating counter
+— it degrades gracefully under backpressure rather than stalling the book.
+
+---
 
 ## Quickstart
 
 ```bash
-# Verilator >= 5.020
-sudo apt-get install -y verilator g++ make   # or brew / module load
+# Prerequisites: Verilator >= 5.020, g++ C++17, make
+sudo apt-get install -y verilator g++ make
 
-make fifo    # infra
-make book    # book unit test
-make smoke   # quasar_core directed stream   <-- start here
-make uvm     # UVM-lite + C++ golden scoreboard
-make all
-make loc
+make all        # 8 directed tests
+make fifo       # sync/async FIFO, CRC-32, priority encoder
+make book       # book command unit test
+make risk       # risk gate rejection codes
+make book_stress  # near-full, 16-order queue, multi-instrument
+make axil       # AXI-Lite R/W, byte strobes, soft-reset
+make scenarios  # multi-level fill, FOK, IOC, dup, mask, disabled
+make smoke      # quasar_core end-to-end
+make regression # cascading fills, STP, replace, BBO, rapid-fire
+make loc        # line counts
+
+# Standalone C++ golden model (no Verilator needed):
+g++ -std=c++17 -O2 -Imodel model/golden_book.cpp model/quasar_sim.cpp \
+    -o quasar_sim && ./quasar_sim
 ```
 
-`make smoke` drives 256-bit AXIS into `quasar_core`, checks fills /
-cancels / replace / CRC reject / AXI-Lite `VERSION`, and exits 0 on
-success.  Full procedure and coverage goals:
-[`docs/verification.md`](docs/verification.md).
+Full UVM with covergroups and a commercial UVM agent needs a commercial
+simulator (Xcelium, VCS, Questa).  The UVM-lite classes in `tb/uvm_lite/`
+map 1:1 to UVM agents.
 
-Commercial simulators are required for SystemVerilog covergroups and a
-textbook UVM agent.  The UVM-lite classes in `tb/uvm_lite/` are the
-same transactions; wrap them.
+---
 
 ## Repository layout
 
 ```
-rtl/pkg          quasar_pkg.sv — opcodes, packed msgs, helpers
-rtl/infra        FIFO, async FIFO, skid, CRC, AXIS/AXI-Lite, free list
-rtl/book         RAM-backed limit book
-rtl/match        matching pipeline
-rtl/risk         notional / position / rate / STP hook
-rtl/ingress      AXIS slave + parser FSM
-rtl/egress       event log + AXIS master
-rtl/csr          AXI-Lite + saturating counters
-rtl/soc          quasar_core, quasar_soc
-tb/smoke         Verilator directed tests
-tb/uvm_lite      driver / monitor / scoreboard / sequences
-tb/common        CRC + txn package
-assert           SVA + covergroups
-model            C++ / SV golden books + DPI
-docs             architecture, protocol, verification, CSR
-scripts          loc.sh, filelist.f
+rtl/
+  pkg/          quasar_pkg.sv — types, opcodes, structs, CSR map
+  infra/        FIFO, CDC, skid, CRC, free-list, counter, AXIS/AXI-Lite
+  book/         order book FSM + BBO-scan satellite
+  match/        matching pipeline FSM
+  risk/         risk gate
+  ingress/      AXIS slave + CRC + parser
+  egress/       event FIFO + AXIS master
+  csr/          AXI4-Lite + saturating perf counters
+  soc/          quasar_core, quasar_soc, watchdog
+
+tb/
+  smoke/        Verilator directed tests (8 total)
+  uvm_lite/     driver / monitor / scoreboard / sequences
+  common/       CRC helper, txn class
+
+assert/         SVA properties, covergroups, bind file
+model/          C++ and SV golden books, standalone sim driver
+docs/           architecture, protocol, verification, CSR map
+scripts/        loc.sh, filelist.f
 ```
 
-## LOC map
+---
 
-Run `make loc` for the live count.  The project is sized as a
-**~10k-line** RTL+TB+SVA SystemVerilog tree (not padded).  Rough
-split:
+## LOC
 
-| Tree | Role |
-|------|------|
-| `rtl/pkg` + `rtl/infra` | types and reusable silicon |
-| `rtl/book` + `rtl/match` | the thing interviewers actually read |
-| `rtl/risk` + `rtl/{ingress,egress,csr,soc}` | production-shaped SoC |
-| `tb/` + `assert/` + `model/*.svh` | directed, random, SVA, golden |
+Run `make loc`.  Current figure: **~8,900 sv/svh lines** (RTL + TB + SVA + SV model).
 
-C++ in `model/` is extra and does not count toward that figure.
+| Subsystem | Lines | Notes |
+|-----------|-------|-------|
+| `rtl/pkg` + `rtl/infra` | ~1,500 | types and shared primitives |
+| `rtl/book` + `rtl/match` | ~2,200 | the core matching logic |
+| `rtl/risk` + rest of `rtl/` | ~1,200 | SoC plumbing |
+| `tb/` (smoke + uvm_lite) | ~2,800 | directed, random, golden scoreboard |
+| `assert/` + `model/*.svh` | ~750 | SVA, covergroups, SV golden |
 
-## What is real
+C++ golden model (`model/*.cpp/hpp`) is another ~750 lines, standalone.
 
-Working, testable RTL for new / cancel / replace / modify, partial
-fills, FOK/IOC/GTC, post-only, STP, risk CSRs, AXI-Stream, AXI-Lite,
-and dual-clock FIFOs.  The book unit test hits time priority, price
-priority, mid-queue cancel, and hash collisions.
+---
 
-Not claimed: a closed timing report, a production venue gateware
-drop, or a full UVM-1.2 environment in this tree.
+## What is working
 
-## License
+- NEW / CANCEL / REPLACE / MODIFY / STATUS / MASS_CXL opcodes
+- Partial fills, multi-level price-walk, FOK/IOC/GTC/DAY, post-only
+- STP (cancel-resting, cancel-taker, cancel-both)
+- Hash-collision-correct cancel and book-full detection
+- Risk: max notional, max |position|, token-bucket rate
+- AXI4-Lite CSR: all registers, byte strobes, self-clearing soft reset
+- Gray-coded async FIFOs (CDC path elaborated and compiled)
+- 8 Verilator tests: all pass
 
-MIT — see [`LICENSE`](LICENSE).
+Not claimed: closed timing report, production venue drop, full UVM-1.2 in this tree.
+
+---
+
+MIT — [`LICENSE`](LICENSE)
