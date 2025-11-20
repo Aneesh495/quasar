@@ -55,7 +55,7 @@ TB_PKG    := tb/common/quasar_tb_pkg.sv
 
 .PHONY: all smoke book fifo uvm scenarios axil loc clean help
 
-all: fifo book risk book_stress axil scenarios smoke regression advanced
+all: fifo book risk book_stress axil scenarios smoke regression advanced pipe_ctrl token_bucket
 # soc64 test available separately (64b AXIS framing smoke)
 # Usage: make soc64
 
@@ -102,6 +102,21 @@ book_stress: $(BUILD)
 	    $(RTL_PKG) $(RTL_INFRA) rtl/book/quasar_book.sv \
 	    tb/smoke/tb_book_stress.sv
 	$(BUILD)/book_stress/Vtb_book_stress
+
+# ---- Pipeline-ctrl and token-bucket unit tests --------------------------
+pipe_ctrl: $(BUILD)
+	$(VERILATOR) --binary $(VL_COMMON) --top-module tb_pipeline_ctrl \
+	    --Mdir $(BUILD)/pipe_ctrl \
+	    $(RTL_PKG) $(RTL_INFRA) rtl/match/quasar_pipeline_ctrl.sv \
+	    tb/smoke/tb_pipeline_ctrl.sv
+	$(BUILD)/pipe_ctrl/Vtb_pipeline_ctrl
+
+token_bucket: $(BUILD)
+	$(VERILATOR) --binary $(VL_COMMON) --top-module tb_token_bucket \
+	    --Mdir $(BUILD)/token_bucket \
+	    $(RTL_PKG) rtl/infra/quasar_token_bucket.sv \
+	    tb/smoke/tb_token_bucket.sv
+	$(BUILD)/token_bucket/Vtb_token_bucket
 
 # ---- Advanced concurrent / multi-instrument test -----------------------
 advanced: $(BUILD)
