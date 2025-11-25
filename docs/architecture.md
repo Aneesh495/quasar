@@ -128,7 +128,7 @@ single ingress command.  The full state diagram is in `README.md`.  Key
 sequencing rules:
 
 - Each `MATCH_ONE` is followed by an `EMIT_FILL` *before* the next book
-  command.  This means a stalled egress cannot cause a fill to be lost —
+  command.  This means a stalled egress cannot cause a fill to be lost,
   the book does not advance until the fill has been accepted by the event FIFO.
 - Residual after IOC is discarded (no INSERT).
 - FOK first issues `WALK_LIQ`; only if `walk_qty >= rem` does it proceed to
@@ -140,7 +140,7 @@ sequencing rules:
 ### Egress (`rtl/egress/quasar_egress.sv`)
 
 FWFT sync FIFO (depth 64, drop-on-full with counter) then a skid buffer that
-presents AXI-Stream master.  The egress never stalls the matcher — it either
+presents AXI-Stream master.  The egress never stalls the matcher, it either
 accepts or drops, and the `DROP_EGRESS` CSR counter increments.  Normal
 operation never reaches drop depth because the matcher throttles naturally
 (one command in-flight).
@@ -186,13 +186,13 @@ or a simple clock-domain-crossing register file for the slow CSR path.
 
 ## Reset
 
-`quasar_rst_sync` — three-stage async-assert / synchronous-deassert per domain.
+`quasar_rst_sync`, three-stage async-assert / synchronous-deassert per domain.
 The external `rst_n` feeds all four instances; each domain deasserts its local
 `rst_n` on its own clock edge, avoiding the metastability that a direct async
 reset crossing would introduce.
 
 Soft reset (`CTRL[1]`, self-clearing): resets matcher state, risk counters, and
-token bucket.  The book SRAMs are *not* scrubbed — a full `rst_n` or issuing
+token bucket.  The book SRAMs are *not* scrubbed, a full `rst_n` or issuing
 `MASS_CXL` on every instrument name is needed for a clean book.
 
 ---
@@ -224,8 +224,8 @@ quasar_soc
 ```
 
 Satellite modules (not in the main datapath):
-- `quasar_bbo_scan` — walks level chains on demand for depth snapshots
-- `quasar_watchdog` — detects stuck pipelines; raises a CSR flag
+- `quasar_bbo_scan`, walks level chains on demand for depth snapshots
+- `quasar_watchdog`, detects stuck pipelines; raises a CSR flag
 
 ---
 
@@ -246,5 +246,5 @@ All in `rtl/pkg/quasar_pkg.sv`.
 | `FIFO_DEPTH_CDC` | 16 | each async FIFO |
 
 Changing `MAX_ORDERS` to 1024 and `MAX_LEVELS` to 512 requires adjusting
-`PTR_W` to 11 and regenerating the free-list init loops — everything else
+`PTR_W` to 11 and regenerating the free-list init loops, everything else
 scales automatically from the package.
