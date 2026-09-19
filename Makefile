@@ -55,7 +55,7 @@ TB_PKG    := tb/common/quasar_tb_pkg.sv
 
 .PHONY: all smoke book fifo uvm scenarios axil loc clean help
 
-all: fifo book risk book_stress axil scenarios smoke regression
+all: fifo book risk book_stress axil scenarios smoke regression advanced
 # soc64 test available separately (64b AXIS framing smoke)
 # Usage: make soc64
 
@@ -102,6 +102,14 @@ book_stress: $(BUILD)
 	    $(RTL_PKG) $(RTL_INFRA) rtl/book/quasar_book.sv \
 	    tb/smoke/tb_book_stress.sv
 	$(BUILD)/book_stress/Vtb_book_stress
+
+# ---- Advanced concurrent / multi-instrument test -----------------------
+advanced: $(BUILD)
+	$(VERILATOR) --binary $(VL_COMMON) --top-module tb_advanced \
+	    --Mdir $(BUILD)/advanced \
+	    $(RTL_PKG) $(RTL_INFRA) $(RTL_DUT) $(TB_PKG) \
+	    tb/smoke/tb_advanced.sv
+	$(BUILD)/advanced/Vtb_advanced
 
 # ---- Long regression ----------------------------------------------------
 regression: $(BUILD)
