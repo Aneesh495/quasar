@@ -1,0 +1,27 @@
+# Verilator / commercial-sim file list (packages first)
++libext+.sv+.svh
+rtl/pkg/quasar_pkg.sv
+rtl/infra/quasar_sync_fifo.sv
+rtl/infra/quasar_async_fifo.sv
+rtl/infra/quasar_skid_buffer.sv
+rtl/infra/quasar_pipe_reg.sv
+rtl/infra/quasar_rr_arbiter.sv
+rtl/infra/quasar_prio_encoder.sv
+rtl/infra/quasar_gray_cdc.sv
+rtl/infra/quasar_rst_sync.sv
+rtl/infra/quasar_crc32.sv
+rtl/infra/quasar_sdp_ram.sv
+rtl/infra/quasar_free_list.sv
+rtl/infra/quasar_counter.sv
+rtl/infra/quasar_axis_width.sv
+rtl/infra/quasar_axis_if.sv
+rtl/infra/quasar_axil_if.sv
+rtl/book/quasar_book.sv
+rtl/match/quasar_matcher.sv
+rtl/risk/quasar_risk_gate.sv
+rtl/ingress/quasar_ingress.sv
+rtl/egress/quasar_egress.sv
+rtl/csr/quasar_csr.sv
+rtl/csr/quasar_perf_counters.sv
+rtl/soc/quasar_core.sv
+rtl/soc/quasar_soc.sv
