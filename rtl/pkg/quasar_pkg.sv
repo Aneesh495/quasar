@@ -433,9 +433,8 @@ package quasar_pkg;
   endfunction
 
   function automatic logic [31:0] msg_payload_lo(input msg_t m);
-    // Bytes [0..15] as they appear on the wire (low 128 bits of the 256).
-    msg_payload_lo = 32'h0; // placeholder — CRC uses the packed vector
-    void'(m);
+    // Low 32 bits of the on-wire word (opcode..qty[7:0] region helper).
+    msg_payload_lo = m[31:0];
   endfunction
 
   // Flatten a msg without its CRC word (low 224 bits) for CRC computation.
