@@ -229,6 +229,7 @@ package quasar_pkg;
     logic [PTR_W-1:0]       prev_ord;   // toward head (older)
     logic [PTR_W-1:0]       level_ptr;
     logic [PTR_W-1:0]       hash_next;
+    logic [PTR_W-1:0]       hash_prev;
     logic [TS_W-1:0]        ts;
   } order_rec_t;
 
