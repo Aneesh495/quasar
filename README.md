@@ -3,6 +3,9 @@
 A synthesizable limit-order-book matching engine written in SystemVerilog.
 Named after a bright point source.
 
+- [quasar](https://github.com/Aneesh495/quasar) — synthesizable SystemVerilog limit-order-book matching engine (this repo)
+- [planck](https://github.com/Aneesh495/planck) — cycle-accurate out-of-order RV32IM core, cache hierarchy, and assembler in pure x86-64 assembly
+
 The interesting problem here is not the trading logic — price-time priority
 is a sorted list and a FIFO.  The interesting problem is doing it in silicon:
 pointers in BRAM, one-cycle BBO reads, O(1) cancel from a hash table, CDC
