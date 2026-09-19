@@ -1,0 +1,46 @@
+# Build / sim artifacts
+build/
+obj_dir/
+*.vcd
+*.fst
+*.ghw
+*.log
+*.vpp
+*.out
+*.o
+*.a
+*.so
+*.d
+*.dmp
+
+# Verilator / Icarus
+sim_build/
+verilator_obj/
+*.verilator_cc
+*.vc
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Coverage
+coverage.dat
+coverage.info
+*.gcda
+*.gcno
+ucdb/
+cov_work/
+
+# Generated
+*.bak
+/tmp/
