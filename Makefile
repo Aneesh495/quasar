@@ -22,6 +22,7 @@ VL_COMMON := --sv --timing --assert --trace --trace-structs \
              -Wno-WIDTHCONCAT -Wno-BLKANDNBLK -Wno-CASEINCOMPLETE \
              -Wno-PINCONNECTEMPTY -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
              -Wno-SELRANGE -Wno-TIMESCALEMOD -Wno-INITIALDLY -Wno-LATCH \
+             -Wno-CONSTRAINTIGN \
              -CFLAGS "-std=c++17 -I../model"
 
 RTL_PKG   := rtl/pkg/quasar_pkg.sv
@@ -52,9 +53,11 @@ RTL_DUT   := rtl/book/quasar_book.sv \
 
 TB_PKG    := tb/common/quasar_tb_pkg.sv
 
-.PHONY: all smoke book fifo uvm loc clean help
+.PHONY: all smoke book fifo uvm scenarios axil loc clean help
 
-all: fifo book smoke
+all: fifo book risk book_stress axil scenarios smoke regression
+# soc64 test available separately (64b AXIS framing smoke)
+# Usage: make soc64
 
 help:
 	@echo "make smoke | book | fifo | uvm | all | loc | clean"
@@ -83,6 +86,53 @@ smoke: $(BUILD)
 	    $(RTL_PKG) $(RTL_INFRA) $(RTL_DUT) $(TB_PKG) \
 	    tb/smoke/tb_quasar_smoke.sv
 	$(BUILD)/smoke/Vtb_quasar_smoke
+
+# ---- Risk gate unit test ------------------------------------------------
+risk: $(BUILD)
+	$(VERILATOR) --binary $(VL_COMMON) --top-module tb_risk \
+	    --Mdir $(BUILD)/risk \
+	    $(RTL_PKG) $(RTL_INFRA) rtl/risk/quasar_risk_gate.sv \
+	    tb/smoke/tb_risk.sv
+	$(BUILD)/risk/Vtb_risk
+
+# ---- Book stress --------------------------------------------------------
+book_stress: $(BUILD)
+	$(VERILATOR) --binary $(VL_COMMON) --top-module tb_book_stress \
+	    --Mdir $(BUILD)/book_stress \
+	    $(RTL_PKG) $(RTL_INFRA) rtl/book/quasar_book.sv \
+	    tb/smoke/tb_book_stress.sv
+	$(BUILD)/book_stress/Vtb_book_stress
+
+# ---- Long regression ----------------------------------------------------
+regression: $(BUILD)
+	$(VERILATOR) --binary $(VL_COMMON) --top-module tb_regression \
+	    --Mdir $(BUILD)/regression \
+	    $(RTL_PKG) $(RTL_INFRA) $(RTL_DUT) $(TB_PKG) \
+	    tb/smoke/tb_regression.sv
+	$(BUILD)/regression/Vtb_regression
+
+# ---- Full 64-bit SoC test -----------------------------------------------
+soc64: $(BUILD)
+	$(VERILATOR) --binary $(VL_COMMON) --top-module tb_soc_64b \
+	    --Mdir $(BUILD)/soc64 \
+	    $(RTL_PKG) $(RTL_INFRA) $(RTL_DUT) $(TB_PKG) \
+	    tb/smoke/tb_soc_64b.sv
+	$(BUILD)/soc64/Vtb_soc_64b
+
+# ---- Extra directed scenarios / AXI-Lite --------------------------------
+scenarios: $(BUILD)
+	$(VERILATOR) --binary $(VL_COMMON) --top-module tb_match_scenarios \
+	    --Mdir $(BUILD)/scenarios \
+	    $(RTL_PKG) $(RTL_INFRA) $(RTL_DUT) $(TB_PKG) \
+	    tb/smoke/tb_match_scenarios.sv
+	$(BUILD)/scenarios/Vtb_match_scenarios
+
+axil: $(BUILD)
+	$(VERILATOR) --binary $(VL_COMMON) --top-module tb_axil \
+	    --Mdir $(BUILD)/axil \
+	    $(RTL_PKG) $(RTL_INFRA) $(RTL_DUT) $(TB_PKG) \
+	    tb/smoke/tb_axil.sv
+	$(BUILD)/axil/Vtb_axil
 
 # ---- UVM-lite + DPI golden --------------------------------------------
 uvm: $(BUILD)
