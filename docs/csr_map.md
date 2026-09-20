@@ -90,7 +90,7 @@ The token bucket refills `RISK_RATE` tokens every `RISK_WINDOW` cycles.
 
 The position counter per instrument is signed 32-bit: buy fills add
 `fill_qty`, sell fills subtract.  `RISK_POSITION` is the unsigned
-magnitude cap — the check is `|pos + delta| > RISK_POSITION`.
+magnitude cap, the check is `|pos + delta| > RISK_POSITION`.
 
 ---
 
@@ -111,6 +111,6 @@ magnitude cap — the check is `|pos + delta| > RISK_POSITION`.
 
 A write to `CTRL[1]=1` clears risk counters (position, token bucket),
 matcher state, and performance counters.  The book SRAMs retain their
-state — all resting orders survive a soft reset.  To clear the book,
+state, all resting orders survive a soft reset.  To clear the book,
 either assert `rst_n` (full hardware reset, 270+ cycle wait) or issue
 `OP_MASS_CXL` for every active name.

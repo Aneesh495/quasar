@@ -3,7 +3,7 @@
 A synthesizable limit-order-book matching engine written in SystemVerilog.
 Named after a bright point source.
 
-The interesting problem here is not the trading logic — price-time priority
+The interesting problem here is not the trading logic, price-time priority
 is a sorted list and a FIFO.  The interesting problem is doing it in silicon:
 pointers in BRAM, one-cycle BBO reads, O(1) cancel from a hash table, CDC
 between clock domains, and verification that survives synthesis.
@@ -150,7 +150,7 @@ two live orders with the same OID.
 risk gate cannot know what is resting at any price; only the book can.
 
 **Valid/ready everywhere.** Skid buffers cut combinational ready paths at every
-inter-block hop.  The event log uses drop-on-full with a saturating counter —
+inter-block hop.  The event log uses drop-on-full with a saturating counter,
 it degrades gracefully under backpressure rather than stalling the book.
 
 ---
@@ -189,7 +189,7 @@ C++ DPI scoreboard.
 
 ```
 rtl/
-  pkg/          quasar_pkg.sv — types, opcodes, structs, CSR map
+  pkg/          quasar_pkg.sv, types, opcodes, structs, CSR map
   infra/        FIFO, CDC, skid, CRC, free-list, counter, AXIS/AXI-Lite
   book/         order book FSM + BBO-depth scanner satellite
   match/        matching pipeline FSM + per-session order tracker
@@ -225,9 +225,9 @@ scripts/        filelist.f
 
 Not claimed: closed timing report, production venue gateware drop, full UVM-1.2.
 
-Protocol: [`docs/protocol.md`](docs/protocol.md) —
+Protocol: [`docs/protocol.md`](docs/protocol.md),
 CSR map: [`docs/csr_map.md`](docs/csr_map.md)
 
 ---
 
-MIT — [`LICENSE`](LICENSE)
+MIT, [`LICENSE`](LICENSE)

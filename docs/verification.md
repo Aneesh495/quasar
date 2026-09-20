@@ -5,7 +5,7 @@ Three rungs, each building on the last.  Bottom two run under
 
 ```mermaid
 flowchart TB
-    subgraph verilator [Verilator smoke — make all]
+    subgraph verilator [Verilator smoke, make all]
       F[tb_fifo\ninfra primitives] --> B[tb_book\nbook commands]
       B --> R[tb_risk\nrisk gate rejects]
       R --> BS[tb_book_stress\nnear-full, queue]
@@ -94,7 +94,7 @@ xrun -sv -timescale 1ns/1ps +define+QUASAR_SVA \
 
 ## Golden book (C++ and SV)
 
-`model/golden_book.cpp` / `.hpp` — same normative rules as `docs/protocol.md`:
+`model/golden_book.cpp` / `.hpp`, same normative rules as `docs/protocol.md`:
 
 - price-time priority, maker price
 - GTC / IOC / FOK / post-only
