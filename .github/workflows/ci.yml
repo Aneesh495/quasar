@@ -1,0 +1,23 @@
+name: Verilator tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  directed-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the documented simulator and build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y verilator g++ make
+          verilator --version
+      - name: Run the directed regression suite
+        run: make all
